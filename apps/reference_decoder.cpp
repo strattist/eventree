@@ -1,3 +1,19 @@
+/**
+ * @file reference_decoder.cpp
+ * @brief Reference decoder: decodes a RAW recording with the installed openeb.
+ *
+ * Prints the wire format (EVT2, EVT3, ...), the number of CD events and an
+ * order-independent checksum. Later tickets compare the eventree decoders
+ * against these numbers.
+ *
+ * Usage: `reference_decoder -i <file.raw>`
+ *
+ * Exit codes:
+ * - 0: decoded successfully
+ * - 1: openeb failed to open or decode the file
+ * - 2: the file is not a RAW recording
+ */
+
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -12,15 +28,29 @@ using namespace Metavision;
 
 namespace {
 
-// RAW recordings start with a header of lines beginning with '%'.
+/**
+ * @brief Cheap check that a file is a RAW recording and not, for example, a web page.
+ *
+ * RAW recordings start with a header of lines beginning with '%'.
+ *
+ * @param path Path of the file to test.
+ * @return true if the first byte is '%'; false if it differs or the file cannot be read.
+ */
 bool looks_like_raw_recording(const std::string &path) {
     std::ifstream in(path, std::ios::binary);
     char first = 0;
     return in.get(first) && first == '%';
 }
 
-// splitmix64 finaliser: good avalanche, so summing the hashes is an
-// order-independent checksum of the multiset of events.
+/**
+ * @brief splitmix64 finaliser, used to hash one packed event key.
+ *
+ * It has good avalanche, so summing the hashes of all events gives an
+ * order-independent checksum of the multiset of events.
+ *
+ * @param z Packed event key (see main()).
+ * @return 64-bit hash of @p z.
+ */
 std::uint64_t mix(std::uint64_t z) {
     z += 0x9e3779b97f4a7c15ULL;
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -30,6 +60,24 @@ std::uint64_t mix(std::uint64_t z) {
 
 } // namespace
 
+/**
+ * @brief Entry point.
+ *
+ * Each CD event is packed into a 64-bit key, hashed with mix(), and the
+ * hashes are summed (with wraparound) into the checksum:
+ *
+ * | bits  | field | width | notes                  |
+ * |-------|-------|-------|------------------------|
+ * | 0     | p     | 1     | polarity               |
+ * | 1     | -     | 1     | unused, always 0       |
+ * | 2-12  | x     | 11    | masked with 0x7ff      |
+ * | 13-23 | y     | 11    | masked with 0x7ff      |
+ * | 24-63 | t     | 40    | timestamp in µs        |
+ *
+ * @param argc Argument count.
+ * @param argv Arguments; `-i/--input` names the RAW file.
+ * @return 0 on success, 1 on decode error, 2 if the input is not a RAW recording.
+ */
 int main(int argc, char **argv) {
     CLI::App app{"reference_decoder: decode a RAW file with openeb, print CD count and checksum"};
 
