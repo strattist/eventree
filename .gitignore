@@ -1,0 +1,14 @@
+# Build output
+build/
+cmake-build-*/
+compile_commands.json
+
+# Recordings are large; keep only helper scripts under datasets/
+datasets/*
+!datasets/get_evt.sh
+
+# Editor
+.vscode/
+.scratch/
+datasets/
+.claude/
