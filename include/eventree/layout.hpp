@@ -16,10 +16,15 @@ struct CdPixel {
 };
 
 // What a layout must provide: appending a CD event, counting the events it
-// holds, and reading event `i` back (events are indexed in append order).
+// holds, reading event `i` back (events are indexed in append order), and
+// managing its pool-backed storage (`reserve`, `reset`, `memory_use`).
+// A layout is constructible from the pool chunk size, in elements.
 template <class L>
-concept Layout = requires(L layout, const L clayout, CdPixel pixel, std::size_t i) {
+concept Layout = std::constructible_from<L, std::size_t> && requires(L layout, const L clayout, CdPixel pixel, std::size_t i) {
   layout.append(pixel);
+  layout.reserve(i);
+  layout.reset();
+  { clayout.memory_use() } -> std::same_as<std::size_t>;
   { clayout.size() } -> std::same_as<std::size_t>;
   { clayout.at(i) } -> std::same_as<CdPixel>;
 };
