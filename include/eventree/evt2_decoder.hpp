@@ -42,6 +42,9 @@ class Evt2Decoder {
     }
   }
 
+ // Forgets the stream's time state; call before decoding an unrelated stream with a decoder already used.
+  void reset() { *this = Evt2Decoder{}; }
+
  private:
   static constexpr std::uint32_t cd_off = 0x0;
   static constexpr std::uint32_t cd_on = 0x1;

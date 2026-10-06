@@ -4,20 +4,27 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
-#include <vector>
 
+#include <eventree/event_pool.hpp>
 #include <eventree/cd_event.hpp>
 #include <eventree/layout.hpp>
 #include <eventree/packed_layout.hpp>
 
 namespace eventree {
 
-// Time high -> time low -> the CD events sharing that timestamp.
+// Time high -> time low -> the CD events sharing that timestamp, stored in event pools.
+// One tree serves one stream and is single-threaded: no reader (iteration, `size`) may run while a writer
+// (`append`, a decoder) is appending, and appending never invalidates data already written but iterators
+// are not meant to be held across appends.
 // The timestamp in µs is (time_high << 6) | time_low, whatever the wire format.
 template <Layout L = PackedLayout>
 class EventTree {
  public:
   static constexpr unsigned time_low_bits = 6;
+
+  // `chunk_size` is the number of elements per pool chunk (rounded up to a power of two).
+  explicit EventTree(std::size_t chunk_size = EventPool<std::uint32_t>::default_chunk_size)
+      : highs_(chunk_size), lows_(chunk_size), layout_(chunk_size) {}
 
   class const_iterator {
    public:
@@ -75,6 +82,28 @@ class EventTree {
     layout_.append(pixel);
   }
 
+  // Number of CD events in the tree.
+  std::size_t size() const { return layout_.size(); }
+
+  // Allocates storage up front for `expected_events` CD events, so that appending that many allocates nothing.
+  // Sized for one time-low node per event and one time-high node per 16 events at worst typical density;
+  // a stream with sparser timestamps may still grow the pool.
+  void reserve(std::size_t expected_events) {
+    layout_.reserve(expected_events);
+    lows_.reserve(expected_events);
+    highs_.reserve(expected_events / 16 + 1);
+  }
+
+  // Empties the tree but keeps all allocated chunks, so decoding into it again allocates nothing.
+  void reset() {
+    highs_.reset();
+    lows_.reset();
+    layout_.reset();
+  }
+
+  // Bytes held by the tree's pools (allocated chunks, whether filled or not).
+  std::size_t memory_use() const { return highs_.memory_use() + lows_.memory_use() + layout_.memory_use(); }
+
   const_iterator begin() const { return const_iterator(this, 0); }
   const_iterator end() const { return const_iterator(this, layout_.size()); }
 
@@ -88,8 +117,8 @@ class EventTree {
     std::uint32_t first_event;
   };
 
-  std::vector<HighNode> highs_;
-  std::vector<LowNode> lows_;
+  EventPool<HighNode> highs_;
+  EventPool<LowNode> lows_;
   L layout_;
 };
 
