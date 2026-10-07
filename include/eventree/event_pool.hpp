@@ -28,6 +28,18 @@ class EventPool {
     ++size_;
   }
 
+  // Block writing, for decoders that append many elements without a check per push: `cursor` is the next slot in
+  // the current chunk (null when it is full), `contiguous_free` the slots left there, and `advance` commits `count`
+  // elements already written at the cursor, `count <= contiguous_free()`.
+  T* cursor() const { return cursor_; }
+  std::size_t contiguous_free() const { return free_; }
+  void advance(std::size_t count) {
+    assert(count <= free_);
+    cursor_ += count;
+    free_ -= count;
+    size_ += count;
+  }
+
   T& operator[](std::size_t i) {
     assert(i < size_);
     return chunks_[i >> shift_][i & (chunk_size_ - 1)];

@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <concepts>
 #include <iterator>
 #include <vector>
 
@@ -20,6 +22,15 @@ namespace eventree {
 // The timestamp in µs is (time_high << 6) | time_low, whatever the wire format.
 template <Layout L = PackedLayout>
 class EventTree {
+  struct HighNode {
+    std::uint32_t time_high;
+    std::uint32_t first_low;
+  };
+  struct LowNode {
+    std::uint8_t time_low;
+    std::uint32_t first_event;
+  };
+
  public:
   static constexpr unsigned time_low_bits = 6;
 
@@ -188,6 +199,77 @@ class EventTree {
     last_low_ = time_low;
   }
 
+  // Whether the layout offers the optional block interface (`pack`, `block_cursor`, `block_free`, `commit_block`).
+  static constexpr bool has_block_path = requires(L& layout, std::size_t n) {
+    { L::pack(CdPixel{}) } -> std::same_as<std::uint32_t>;
+    { layout.block_cursor() } -> std::same_as<std::uint32_t*>;
+    { layout.block_free() } -> std::same_as<std::size_t>;
+    layout.commit_block(n);
+  };
+
+  // How many events a `BlockWriter` may append now: the room left in the current chunk of the fullest pool.
+  // 0 when a pool is full (the next `append` enters a new chunk) or the layout has no block interface.
+  std::size_t block_capacity() {
+    if constexpr (has_block_path)
+      return std::min({highs_.contiguous_free(), lows_.contiguous_free(), layout_.block_free()});
+    else
+      return 0;
+  }
+
+  // Appends up to `block_capacity()` events with no per-event capacity check and no unpredictable branch: the
+  // candidate time-high and time-low nodes are always written, and only advance when the event opens a node.
+  // Same result as calling `append` for each event. The tree must not be touched until `finish`, which commits
+  // what was appended (a writer that is dropped without `finish` appends nothing).
+  class BlockWriter {
+   public:
+    explicit BlockWriter(EventTree& tree)
+        : tree_(tree),
+          h_(tree.highs_.cursor()),
+          l_(tree.lows_.cursor()),
+          p_(tree.layout_.block_cursor()),
+          low_count_(tree.lows_.size()),
+          event_count_(tree.layout_.size()),
+          have_last_(tree.have_last_),
+          last_high_(tree.last_high_),
+          last_low_(tree.last_low_) {}
+
+    void append(std::uint32_t time_high, std::uint8_t time_low, CdPixel pixel) {
+      assert(!have_last_ || time_high >= last_high_);
+      const bool new_high = !have_last_ || last_high_ != time_high;
+      assert(new_high || time_low >= last_low_);
+      const bool new_low = new_high || last_low_ != time_low;
+      *h_ = {time_high, static_cast<std::uint32_t>(low_count_)};
+      *l_ = {time_low, static_cast<std::uint32_t>(event_count_)};
+      *p_++ = L::pack(pixel);
+      h_ += new_high;
+      l_ += new_low;
+      low_count_ += new_low;
+      ++event_count_;
+      have_last_ = true;
+      last_high_ = time_high;
+      last_low_ = time_low;
+    }
+
+    void finish() {
+      tree_.highs_.advance(h_ - tree_.highs_.cursor());
+      tree_.lows_.advance(l_ - tree_.lows_.cursor());
+      tree_.layout_.commit_block(event_count_ - tree_.layout_.size());
+      tree_.have_last_ = have_last_;
+      tree_.last_high_ = last_high_;
+      tree_.last_low_ = last_low_;
+    }
+
+   private:
+    EventTree& tree_;
+    HighNode* h_;
+    LowNode* l_;
+    std::uint32_t* p_;
+    std::size_t low_count_, event_count_;
+    bool have_last_;
+    std::uint32_t last_high_;
+    std::uint8_t last_low_;
+  };
+
   // Number of CD events in the tree.
   std::size_t size() const { return layout_.size(); }
 
@@ -242,15 +324,6 @@ class EventTree {
   const_iterator end() const { return const_iterator(this, layout_.size()); }
 
  private:
-  struct HighNode {
-    std::uint32_t time_high;
-    std::uint32_t first_low;
-  };
-  struct LowNode {
-    std::uint8_t time_low;
-    std::uint32_t first_event;
-  };
-
   const_node_iterator node_begin() const { return const_node_iterator(this, 0, 0); }
   const_node_iterator node_end() const { return const_node_iterator(this, highs_.size(), lows_.size()); }
 

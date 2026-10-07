@@ -13,10 +13,17 @@ class PackedLayout {
  public:
   explicit PackedLayout(std::size_t chunk_size = EventPool<std::uint32_t>::default_chunk_size) : words_(chunk_size) {}
 
-  void append(CdPixel pixel) {
-    words_.push_back((std::uint32_t{pixel.y} << 12) | (std::uint32_t{pixel.x} << 1) |
-                     (pixel.polarity & 1u));
+  static std::uint32_t pack(CdPixel pixel) {
+    return (std::uint32_t{pixel.y} << 12) | (std::uint32_t{pixel.x} << 1) | (pixel.polarity & 1u);
   }
+
+  void append(CdPixel pixel) { words_.push_back(pack(pixel)); }
+
+  // Optional block interface, used by the tree's fast path (see EventTree::BlockWriter): write packed words at
+  // `block_cursor()`, at most `block_free()` of them, then `commit_block` how many were written.
+  std::uint32_t* block_cursor() { return words_.cursor(); }
+  std::size_t block_free() const { return words_.contiguous_free(); }
+  void commit_block(std::size_t count) { words_.advance(count); }
 
   std::size_t size() const { return words_.size(); }
   void reserve(std::size_t events) { words_.reserve(events); }

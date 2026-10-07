@@ -33,8 +33,25 @@ class Evt3Decoder {
       has_pending_ = false;
       decode_word(load(pair), tree);
     }
-    std::size_t i = 0;
-    for (; i + sizeof(std::uint16_t) <= bytes.size(); i += sizeof(std::uint16_t)) decode_word(load(bytes.data() + i), tree);
+    const std::size_t words = bytes.size() / sizeof(std::uint16_t);
+    std::size_t w = 0;
+    while (w < words) {
+      // A block is bounded by the room left in the tree's current pool chunks, at the worst case of one vector word's
+      // events per word; when there is less room (or the layout has no block interface) one word goes through the
+      // plain path, which enters the next chunk.
+      std::size_t count = 0;
+      if constexpr (EventTree<L>::has_block_path) count = std::min(tree.block_capacity() / max_events_per_word, words - w);
+      if (count == 0) {
+        decode_word(load(bytes.data() + w * sizeof(std::uint16_t)), tree);
+        ++w;
+        continue;
+      }
+      if constexpr (EventTree<L>::has_block_path) {
+        decode_block(bytes.data() + w * sizeof(std::uint16_t), count, tree);
+        w += count;
+      }
+    }
+    const std::size_t i = words * sizeof(std::uint16_t);
     if (i < bytes.size()) {
       pending_ = bytes[i];
       has_pending_ = true;
@@ -47,6 +64,89 @@ class Evt3Decoder {
   void reset() { *this = Evt3Decoder{}; }
 
  private:
+  static constexpr std::size_t max_events_per_word = 12;  // a 12-bit vector word
+
+  // Decodes `count` words, each possibly emitting up to `max_events_per_word` events (the caller sized the block
+  // for that), with the decoder's state in locals so that nothing is reloaded from memory between words.
+  template <Layout L>
+  void decode_block(const std::byte* data, std::size_t count, EventTree<L>& tree) {
+    typename EventTree<L>::BlockWriter writer(tree);
+    std::uint16_t y = y_, base_x = base_x_, time_low_now = time_low_, last_wire_high = last_wire_high_;
+    std::uint8_t polarity = polarity_;
+    bool is_cd = is_cd_, has_time_high = has_time_high_;
+    std::uint32_t loops = loops_;
+    std::uint64_t cd_events = 0, time_high_words = 0, skipped_words = 0;
+
+    auto emit = [&](std::uint16_t x, std::uint8_t pol) {
+      ++cd_events;
+      const std::uint32_t high = (loops << 18) | (std::uint32_t{last_wire_high} << 6) | (time_low_now >> 6);
+      writer.append(high, static_cast<std::uint8_t>(time_low_now & 0x3F), {x, y, pol});
+    };
+    auto emit_vector = [&](std::uint16_t valid, unsigned width) {
+      for (unsigned bit = 0; bit < width; ++bit)
+        if (valid & (1u << bit)) emit(static_cast<std::uint16_t>((base_x + bit) & 0x7FF), polarity);
+      base_x = static_cast<std::uint16_t>((base_x + width) & 0x7FF);
+    };
+
+    for (std::size_t n = 0; n < count; ++n) {
+      const std::uint16_t word = load(data + n * sizeof(std::uint16_t));
+      const std::uint16_t content = word & 0x0FFF;
+      const bool ready = is_cd && has_time_high;
+      switch (word >> 12) {
+        case addr_y:
+          y = content & 0x7FF;
+          is_cd = true;
+          break;
+        case addr_x:
+          if (!ready) { ++skipped_words; break; }
+          emit(content & 0x7FF, (content >> 11) & 1u);
+          break;
+        case vect_base_x:
+          if (!ready) { ++skipped_words; break; }
+          base_x = content & 0x7FF;
+          polarity = (content >> 11) & 1u;
+          break;
+        case vect_12:
+          if (!ready) { ++skipped_words; break; }
+          emit_vector(content, 12);
+          break;
+        case vect_8:
+          if (!ready) { ++skipped_words; break; }
+          emit_vector(content & 0xFF, 8);
+          break;
+        case time_low:
+          time_low_now = content;
+          break;
+        case time_high:
+          ++time_high_words;
+          has_time_high = true;
+          if (content < last_wire_high) ++loops;
+          if (content != last_wire_high) time_low_now = 0;
+          last_wire_high = content;
+          break;
+        case em_addr_y:
+          is_cd = false;
+          ++skipped_words;
+          break;
+        default:
+          ++skipped_words;
+          break;
+      }
+    }
+    writer.finish();
+    y_ = y;
+    base_x_ = base_x;
+    time_low_ = time_low_now;
+    last_wire_high_ = last_wire_high;
+    polarity_ = polarity;
+    is_cd_ = is_cd;
+    has_time_high_ = has_time_high;
+    loops_ = loops;
+    statistics_.cd_events += cd_events;
+    statistics_.time_high_words += time_high_words;
+    statistics_.skipped_words += skipped_words;
+  }
+
   static std::uint16_t load(const std::byte* p) {
     std::uint16_t word;
     std::memcpy(&word, p, sizeof word);
