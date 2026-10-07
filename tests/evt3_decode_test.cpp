@@ -202,4 +202,12 @@ TEST(Evt3RobustnessDeathTest, TimeGoingBackwardsTripsAnAssertion) {
 }
 #endif
 
+TEST(Evt3Decode, CdEventsBeforeTheFirstTimeHighAreSkippedLikeTheReferenceDecoder) {
+  eventree::Evt3Statistics stats;
+  // Y=5, X=7 and a vector with no time known, then time high 1, time low 3, Y=2, X=9 (polarity 1).
+  const auto events = decode_words({0x0005, 0x2007, 0x3000, 0x4001, 0x8001, 0x6003, 0x0002, 0x2809}, &stats);
+  EXPECT_EQ(events, (std::vector<CdEvent>{{9, 2, 1, 4099}}));
+  EXPECT_EQ(stats.cd_events, 1u);
+}
+
 }  // namespace

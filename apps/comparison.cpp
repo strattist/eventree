@@ -6,7 +6,7 @@
  * Usage: `comparison [-d <datasets dir>]` (default: `datasets`)
  *
  * The wire format of each file is read from its RAW header. Files that are not recordings are ignored with a
- * message, and so are formats eventree cannot decode yet (only EVT2 for now).
+ * message. EVT2 and EVT3 files can be mixed in the same directory.
  *
  * Exit codes:
  * - 0: every decoded file matched the reference decoder
@@ -34,6 +34,7 @@
 #include <metavision/sdk/stream/camera.h>
 
 #include <eventree/evt2_decoder.hpp>
+#include <eventree/evt3_decoder.hpp>
 
 namespace fs = std::filesystem;
 
@@ -95,12 +96,13 @@ std::vector<Event> decode_reference(const fs::path &path) {
   return events;
 }
 
-/// Decodes the event data of an EVT2 file with eventree into an event tree, read in 1 MiB chunks.
-eventree::EventTree<> decode_evt2(const fs::path &path, std::size_t data_offset) {
+/// Decodes the event data of a file with eventree's decoder `Decoder` into an event tree, read in 1 MiB chunks.
+template <typename Decoder>
+eventree::EventTree<> decode_eventree(const fs::path &path, std::size_t data_offset) {
   std::ifstream in(path, std::ios::binary);
   in.seekg(static_cast<std::streamoff>(data_offset));
   eventree::EventTree<> tree;
-  eventree::Evt2Decoder decoder;
+  Decoder decoder;
   std::vector<std::byte> buffer(1 << 20);
   while (in.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(buffer.size())) || in.gcount() > 0)
     decoder.decode(std::span<const std::byte>(buffer.data(), static_cast<std::size_t>(in.gcount())), tree);
@@ -123,10 +125,11 @@ bool same_events(const std::vector<Event> &reference, const std::vector<Event> &
   return false;
 }
 
-/// Compares one EVT2 file; returns true if it matches.
-bool compare_evt2(const fs::path &path, const RawHeader &header) {
+/// Compares one file decoded with `Decoder`; returns true if it matches the reference decoder.
+template <typename Decoder>
+bool compare(const fs::path &path, const RawHeader &header) {
   auto reference = decode_reference(path);
-  const auto tree = decode_evt2(path, header.data_offset);
+  const auto tree = decode_eventree<Decoder>(path, header.data_offset);
 
   std::vector<Event> ours;
   ours.reserve(tree.size());
@@ -174,10 +177,11 @@ int main(int argc, char **argv) {
       switch (header->format) {
         case WireFormat::evt2:
           std::cout << "  EVT2\n";
-          all_match &= compare_evt2(path, *header);
+          all_match &= compare<eventree::Evt2Decoder>(path, *header);
           break;
         case WireFormat::evt3:
-          std::cout << "  EVT3: ignored, not compared yet\n";
+          std::cout << "  EVT3\n";
+          all_match &= compare<eventree::Evt3Decoder>(path, *header);
           break;
         default:
           std::cout << "  ignored: unsupported wire format\n";

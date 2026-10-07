@@ -20,8 +20,8 @@ struct Evt3Statistics {
 // Decodes an EVT3 raw stream (16-bit little-endian words) into an event tree.
 // EVT3 is stateful: address, vector base and time words set state that later words build on, so a multi-word event
 // is never held back; chunks may end anywhere, even inside a word: the trailing byte is held until the next call.
-// Non-CD words are skipped and counted. Timestamps must not go backwards (checked by assertion in debug builds
-// only, by the tree).
+// Non-CD words, and CD words before the first time high word, are skipped and counted. Timestamps must not go
+// backwards (checked by assertion in debug builds only, by the tree).
 class Evt3Decoder {
  public:
   template <Layout L>
@@ -62,20 +62,20 @@ class Evt3Decoder {
         is_cd_ = true;
         break;
       case addr_x:
-        if (!is_cd_) return skip();
+        if (!cd_ready()) return skip();
         emit(content & 0x7FF, (content >> 11) & 1u, tree);
         break;
       case vect_base_x:
-        if (!is_cd_) return skip();
+        if (!cd_ready()) return skip();
         base_x_ = content & 0x7FF;
         polarity_ = (content >> 11) & 1u;
         break;
       case vect_12:
-        if (!is_cd_) return skip();
+        if (!cd_ready()) return skip();
         emit_vector(content, 12, tree);
         break;
       case vect_8:
-        if (!is_cd_) return skip();
+        if (!cd_ready()) return skip();
         emit_vector(content & 0xFF, 8, tree);
         break;
       case time_low:
@@ -85,6 +85,7 @@ class Evt3Decoder {
         {
           // The wire value is 12 bits and wraps; unroll the wraps into the tree's 32-bit time high.
           statistics_.time_high_words += 1;
+          has_time_high_ = true;
           if (content < last_wire_high_) loops_ += 1;
           // A new time high invalidates the time low until the time low word that follows it.
           if (content != last_wire_high_) time_low_ = 0;
@@ -100,6 +101,9 @@ class Evt3Decoder {
         break;
     }
   }
+
+  // Events whose time is not known yet (before the first time high word) are dropped, as the reference decoder does.
+  bool cd_ready() const { return is_cd_ && has_time_high_; }
 
   void skip() { statistics_.skipped_words += 1; }
 
@@ -131,6 +135,7 @@ class Evt3Decoder {
   std::uint16_t base_x_ = 0;
   std::uint8_t polarity_ = 0;
   bool is_cd_ = false;  // whether the last Y word was a CD one (events sharing a row follow it)
+  bool has_time_high_ = false;
   std::uint16_t time_low_ = 0;
   std::uint16_t last_wire_high_ = 0;
   std::uint32_t loops_ = 0;
