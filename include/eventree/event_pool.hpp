@@ -22,8 +22,9 @@ class EventPool {
       : shift_(std::countr_zero(std::bit_ceil(chunk_size ? chunk_size : 1))), chunk_size_(std::size_t{1} << shift_) {}
 
   void push_back(const T& value) {
-    if ((size_ >> shift_) == chunks_.size()) chunks_.push_back(std::make_unique_for_overwrite<T[]>(chunk_size_));
-    chunks_[size_ >> shift_][size_ & (chunk_size_ - 1)] = value;
+    if (free_ == 0) [[unlikely]] enter_next_chunk();
+    *cursor_++ = value;
+    --free_;
     ++size_;
   }
 
@@ -50,7 +51,11 @@ class EventPool {
     while (chunks_.size() < needed) chunks_.push_back(std::make_unique_for_overwrite<T[]>(chunk_size_));
   }
 
-  void reset() { size_ = 0; }
+  void reset() {
+    size_ = 0;
+    cursor_ = nullptr;
+    free_ = 0;
+  }
 
   // Bytes held by the pool, including chunks that are allocated but not yet filled.
   std::size_t memory_use() const {
@@ -58,9 +63,19 @@ class EventPool {
   }
 
  private:
+  // Points the write cursor at the chunk holding element `size_`, allocating it if it does not exist yet.
+  void enter_next_chunk() {
+    const std::size_t index = size_ >> shift_;
+    if (index == chunks_.size()) chunks_.push_back(std::make_unique_for_overwrite<T[]>(chunk_size_));
+    cursor_ = chunks_[index].get();
+    free_ = chunk_size_;
+  }
+
   unsigned shift_;
   std::size_t chunk_size_;
   std::size_t size_ = 0;
+  T* cursor_ = nullptr;      // next slot to write in the current chunk
+  std::size_t free_ = 0;     // slots left in the current chunk; 0 sends the next push to `enter_next_chunk`
   std::vector<std::unique_ptr<T[]>> chunks_;
 };
 

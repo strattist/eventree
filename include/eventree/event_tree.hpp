@@ -177,13 +177,15 @@ class EventTree {
 
   // Appends a CD event. Timestamps must be non-decreasing.
   void append(std::uint32_t time_high, std::uint8_t time_low, CdPixel pixel) {
-    const bool new_high = highs_.empty() || highs_.back().time_high != time_high;
-    assert(highs_.empty() || time_high >= highs_.back().time_high);
-    assert(new_high || time_low >= lows_.back().time_low);
+    const bool new_high = !have_last_ || last_high_ != time_high;
+    assert(!have_last_ || time_high >= last_high_);
+    assert(new_high || time_low >= last_low_);
     if (new_high) highs_.push_back({time_high, static_cast<std::uint32_t>(lows_.size())});
-    if (new_high || lows_.back().time_low != time_low)
-      lows_.push_back({time_low, static_cast<std::uint32_t>(layout_.size())});
+    if (new_high || last_low_ != time_low) lows_.push_back({time_low, static_cast<std::uint32_t>(layout_.size())});
     layout_.append(pixel);
+    have_last_ = true;
+    last_high_ = time_high;
+    last_low_ = time_low;
   }
 
   // Number of CD events in the tree.
@@ -230,6 +232,7 @@ class EventTree {
     highs_.reset();
     lows_.reset();
     layout_.reset();
+    have_last_ = false;
   }
 
   // Bytes held by the tree's pools (allocated chunks, whether filled or not).
@@ -261,6 +264,10 @@ class EventTree {
     return node;
   }
 
+  // The last time high and time low appended, remembered so that `append` does not read them back from the pools.
+  bool have_last_ = false;
+  std::uint32_t last_high_ = 0;
+  std::uint8_t last_low_ = 0;
   EventPool<HighNode> highs_;
   EventPool<LowNode> lows_;
   L layout_;
