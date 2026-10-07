@@ -11,7 +11,9 @@
  * - eventree throughput (M events/s and input MB/s), from the median run's total decode time.
  * - end-to-end time from file to tree, reading the file in chunks into a fresh tree (median of the runs).
  * - the reference decoder's end-to-end time and throughput, from opening the file until the camera stops
- *   (median of the runs). openeb delivers events through callbacks, so it has no per-chunk decode latency.
+ *   (median of the runs), with openeb's background indexing disabled. openeb delivers events through callbacks and
+ *   cannot decode data already in memory, so its figure is end-to-end (file read included), not decode-only, and is
+ *   labelled as such; it has no per-chunk decode latency.
  *
  * A summary per wire format follows (median over the files of each format). The output is plain text, one
  * `key: value` line per number, so it can be diffed over time.
@@ -132,6 +134,7 @@ double reference_end_to_end(const fs::path &path, std::size_t &events) {
   Metavision::FileConfigHints hints;
   hints.real_time_playback(false);
   hints.time_shift(false);
+  hints.set("index", false);  // no background thread decoding the file a second time
   auto camera = Metavision::Camera::from_file(path.string(), hints);
   std::size_t count = 0;
   camera.cd().add_callback([&](const Metavision::EventCD *begin, const Metavision::EventCD *end) {
@@ -209,9 +212,9 @@ void print(const Result &r) {
   std::cout << "  events: " << r.events << "  input_MB: " << static_cast<double>(r.bytes) / 1e6 << "\n"
             << "  eventree latency_us:    median " << r.latency_median_us << "  p99 " << r.latency_p99_us << "  worst "
             << r.latency_worst_us << "\n"
-            << "  eventree throughput:    " << r.mevents_per_s << " Mevents/s  " << r.mb_per_s << " MB/s\n"
+            << "  eventree throughput (decode-only):    " << r.mevents_per_s << " Mevents/s  " << r.mb_per_s << " MB/s\n"
             << "  eventree end_to_end_s:  " << std::setprecision(4) << r.end_to_end_s << std::setprecision(2) << "\n"
-            << "  reference throughput:   " << r.reference_mevents_per_s << " Mevents/s  " << r.reference_mb_per_s
+            << "  reference throughput (end-to-end):    " << r.reference_mevents_per_s << " Mevents/s  " << r.reference_mb_per_s
             << " MB/s\n"
             << "  reference end_to_end_s: " << std::setprecision(4) << r.reference_end_to_end_s << "\n"
             << "  speedup end_to_end:     " << std::setprecision(2)
@@ -233,9 +236,9 @@ void print_summary(const std::string &name, const std::vector<Result> &results) 
             << std::fixed << std::setprecision(2)
             << "  eventree latency_us median: " << med(&Result::latency_median_us)
             << "  worst: " << max_of(&Result::latency_worst_us) << "\n"
-            << "  eventree throughput: " << med(&Result::mevents_per_s) << " Mevents/s  " << med(&Result::mb_per_s)
+            << "  eventree throughput (decode-only): " << med(&Result::mevents_per_s) << " Mevents/s  " << med(&Result::mb_per_s)
             << " MB/s\n"
-            << "  reference throughput: " << med(&Result::reference_mevents_per_s) << " Mevents/s  "
+            << "  reference throughput (end-to-end): " << med(&Result::reference_mevents_per_s) << " Mevents/s  "
             << med(&Result::reference_mb_per_s) << " MB/s\n";
 }
 
