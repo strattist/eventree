@@ -5,7 +5,7 @@ FetchContent_Declare(googletest
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(eventree_tests skeleton_test.cpp evt2_decode_test.cpp event_pool_test.cpp reading_api_test.cpp)
+add_executable(eventree_tests skeleton_test.cpp evt2_decode_test.cpp evt3_decode_test.cpp event_pool_test.cpp reading_api_test.cpp)
 target_link_libraries(eventree_tests PRIVATE eventree::eventree GTest::gtest_main)
 target_compile_options(eventree_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
