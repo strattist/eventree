@@ -32,3 +32,14 @@ target_link_libraries(comparison
         MetavisionSDK::core
         MetavisionSDK::stream
 )
+
+add_executable(benchmark benchmark.cpp)
+target_link_libraries(benchmark
+    PRIVATE
+        eventree::eventree
+        CLI11::CLI11
+        Metavision::PSEEHWLayer
+        MetavisionSDK::base
+        MetavisionSDK::core
+        MetavisionSDK::stream
+)
