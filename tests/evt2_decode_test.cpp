@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <vector>
 
 #include <eventree/evt2_decoder.hpp>
@@ -54,5 +55,91 @@ TEST(Evt2Decode, DecodeAppendsToAnExistingTree) {
   EXPECT_EQ((std::vector<CdEvent>{tree.begin(), tree.end()}),
             (std::vector<CdEvent>{{1, 1, 1, 100}, {2, 2, 0, 200}}));
 }
+
+std::vector<std::byte> words_to_bytes(const std::vector<std::uint32_t>& words) {
+  std::vector<std::byte> out(words.size() * sizeof(std::uint32_t));
+  if (!out.empty()) std::memcpy(out.data(), words.data(), out.size());
+  return out;
+}
+
+TEST(Evt2Robustness, StreamSplitAtEveryByteOffsetDecodesLikeTheUnsplitStream) {
+  const std::int64_t loop = 1LL << 34;
+  const std::vector<CdEvent> events{{1, 2, 1, 5},          {3, 4, 0, 5},          {5, 6, 1, 64},
+                                    {7, 8, 0, loop - 1},   {9, 10, 1, loop + 3},  {11, 12, 0, loop + 70}, {13, 14, 1, 2 * loop + 1}};
+  const auto bytes = eventree::test::encode_evt2(events);
+  for (std::size_t cut = 0; cut <= bytes.size(); ++cut) {
+    eventree::EventTree<> tree;
+    eventree::Evt2Decoder decoder;
+    decoder.decode(std::span{bytes}.first(cut), tree);
+    decoder.decode(std::span{bytes}.subspan(cut), tree);
+    EXPECT_EQ((std::vector<CdEvent>{tree.begin(), tree.end()}), events) << "cut at " << cut;
+  }
+}
+
+TEST(Evt2Robustness, ByteByByteFeedingDecodesLikeTheUnsplitStream) {
+  const std::vector<CdEvent> events{{1, 2, 1, 5}, {3, 4, 0, 100}, {5, 6, 1, (1LL << 34) + 7}};
+  const auto bytes = eventree::test::encode_evt2(events);
+  eventree::EventTree<> tree;
+  eventree::Evt2Decoder decoder;
+  for (std::size_t i = 0; i < bytes.size(); ++i) decoder.decode(std::span{bytes}.subspan(i, 1), tree);
+  EXPECT_EQ((std::vector<CdEvent>{tree.begin(), tree.end()}), events);
+}
+
+TEST(Evt2Robustness, NonCdWordsAreSkippedAndCounted) {
+  const auto bytes = words_to_bytes({
+      0x8u << 28 | 1,                             // time high
+      0x0u << 28 | 3u << 22 | 10u << 11 | 20u,    // CD off
+      0xAu << 28 | 0x123,                         // external trigger
+      0xEu << 28 | 0x1,                           // other
+      0xFu << 28,                                 // continued / padding
+      0x1u << 28 | 4u << 22 | 11u << 11 | 21u,    // CD on
+      0x0u << 28 | 5u << 22 | 12u << 11 | 22u,    // CD off
+  });
+  eventree::EventTree<> tree;
+  eventree::Evt2Decoder decoder;
+  decoder.decode(bytes, tree);
+  EXPECT_EQ((std::vector<CdEvent>{tree.begin(), tree.end()}),
+            (std::vector<CdEvent>{{10, 20, 0, 64 + 3}, {11, 21, 1, 64 + 4}, {12, 22, 0, 64 + 5}}));
+  const auto& stats = decoder.statistics();
+  EXPECT_EQ(stats.cd_events, 3u);
+  EXPECT_EQ(stats.time_high_words, 1u);
+  EXPECT_EQ(stats.skipped_words, 3u);
+}
+
+TEST(Evt2Robustness, StatisticsAccumulateAcrossCallsAndResetClearsThem) {
+  const auto bytes = words_to_bytes({0x8u << 28, 0xAu << 28, 0x1u << 28});
+  eventree::EventTree<> tree;
+  eventree::Evt2Decoder decoder;
+  decoder.decode(bytes, tree);
+  decoder.decode(bytes, tree);
+  EXPECT_EQ(decoder.statistics().skipped_words, 2u);
+  decoder.reset();
+  EXPECT_EQ(decoder.statistics().skipped_words, 0u);
+  EXPECT_EQ(decoder.statistics().cd_events, 0u);
+}
+
+TEST(Evt2Robustness, EmptyAndSubWordInputChangeNothing) {
+  eventree::EventTree<> tree;
+  eventree::Evt2Decoder decoder;
+  decoder.decode({}, tree);
+  const std::byte partial[3]{};
+  decoder.decode(partial, tree);  // held as a pending partial word, nothing decoded
+  EXPECT_EQ(tree.size(), 0u);
+  EXPECT_EQ(decoder.statistics().cd_events, 0u);
+  EXPECT_EQ(decoder.statistics().skipped_words, 0u);
+}
+
+#ifndef NDEBUG
+TEST(Evt2RobustnessDeathTest, TimeGoingBackwardsTripsAnAssertion) {
+  const auto bytes = words_to_bytes({0x8u << 28 | 5, 0x1u << 28 | 9u << 22, 0x1u << 28 | 2u << 22});
+  EXPECT_DEATH(
+      {
+        eventree::EventTree<> tree;
+        eventree::Evt2Decoder decoder;
+        decoder.decode(bytes, tree);
+      },
+      "");
+}
+#endif
 
 }  // namespace
