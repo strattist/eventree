@@ -236,6 +236,7 @@ class EventTree {
     void append(std::uint32_t time_high, std::uint8_t time_low, CdPixel pixel) {
       assert(!have_last_ || time_high >= last_high_);
       const bool new_high = !have_last_ || last_high_ != time_high;
+      assert(new_high || time_low >= last_low_);
       const bool new_low = new_high || last_low_ != time_low;
       *h_ = {time_high, static_cast<std::uint32_t>(low_count_)};
       *l_ = {time_low, static_cast<std::uint32_t>(event_count_)};
