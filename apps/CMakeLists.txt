@@ -21,3 +21,14 @@ target_link_libraries(reference_decoder
         MetavisionSDK::core
         MetavisionSDK::stream
 )
+
+add_executable(comparison comparison.cpp)
+target_link_libraries(comparison
+    PRIVATE
+        eventree::eventree
+        CLI11::CLI11
+        Metavision::PSEEHWLayer
+        MetavisionSDK::base
+        MetavisionSDK::core
+        MetavisionSDK::stream
+)

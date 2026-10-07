@@ -20,7 +20,7 @@ struct Evt2Statistics {
 
 // Decodes an EVT2 raw stream (32-bit little-endian words) into an event tree.
 // Chunks may end anywhere, even inside a word: the trailing bytes are held until the next call.
-// Non-CD words are skipped and counted. Timestamps must not go backwards (checked by assertion in debug builds
+// Non-CD words, and CD words before the first time high word, are skipped and counted. Timestamps must not go backwards (checked by assertion in debug builds
 // only, by the tree).
 class Evt2Decoder {
  public:
@@ -59,6 +59,11 @@ class Evt2Decoder {
     switch (word >> 28) {
       case cd_off:
       case cd_on:
+        // Without a time high the timestamp is unknown: skip, as the reference decoder does.
+        if (!have_time_high_) {
+          statistics_.skipped_words += 1;
+          break;
+        }
         statistics_.cd_events += 1;
         tree.append(time_high_, static_cast<std::uint8_t>((word >> 22) & 0x3F),
                     {static_cast<std::uint16_t>((word >> 11) & 0x7FF), static_cast<std::uint16_t>(word & 0x7FF),
@@ -68,6 +73,7 @@ class Evt2Decoder {
         {
           // The wire value is 28 bits and wraps; unroll the wraps into the tree's 32-bit time high.
           statistics_.time_high_words += 1;
+          have_time_high_ = true;
           const std::uint32_t value = word & 0x0FFFFFFF;
           if (value < last_wire_high_) loops_ += 1;
           last_wire_high_ = value;
@@ -84,6 +90,7 @@ class Evt2Decoder {
   static constexpr std::uint32_t cd_on = 0x1;
   static constexpr std::uint32_t time_high = 0x8;
 
+  bool have_time_high_ = false;
   std::uint32_t time_high_ = 0;
   std::uint32_t last_wire_high_ = 0;
   std::uint32_t loops_ = 0;

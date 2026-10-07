@@ -143,3 +143,18 @@ TEST(Evt2RobustnessDeathTest, TimeGoingBackwardsTripsAnAssertion) {
 #endif
 
 }  // namespace
+
+namespace {
+
+TEST(Evt2Decode, CdEventsBeforeTheFirstTimeHighAreSkippedLikeTheReferenceDecoder) {
+  eventree::EventTree<> tree;
+  eventree::Evt2Decoder decoder;
+  // Two CD words with no time known, then time high 1, then one CD word (time low 3).
+  decoder.decode(words_to_bytes({(0x1u << 28) | (5u << 22), (0x0u << 28), (0x8u << 28) | 1u, (0x1u << 28) | (3u << 22)}),
+                 tree);
+  EXPECT_EQ((std::vector<CdEvent>{tree.begin(), tree.end()}), (std::vector<CdEvent>{{0, 0, 1, 67}}));
+  EXPECT_EQ(decoder.statistics().cd_events, 1u);
+  EXPECT_EQ(decoder.statistics().skipped_words, 2u);
+}
+
+}  // namespace
