@@ -38,12 +38,26 @@ class Evt2Decoder {
       pending_size_ = 0;
       decode_word(word, tree);
     }
-    std::size_t i = 0;
-    for (; i + sizeof(std::uint32_t) <= bytes.size(); i += sizeof(std::uint32_t)) {
-      std::uint32_t word;
-      std::memcpy(&word, bytes.data() + i, sizeof word);
-      decode_word(word, tree);
+    const std::size_t words = bytes.size() / sizeof(std::uint32_t);
+    std::size_t w = 0;
+    while (w < words) {
+      // Blocks are bounded by the room left in the tree's current pool chunks; when a pool is full (or the layout has
+      // no block interface) one word goes through the plain path, which enters the next chunk.
+      const std::size_t capacity = tree.block_capacity();
+      if (capacity == 0) {
+        std::uint32_t word;
+        std::memcpy(&word, bytes.data() + w * sizeof word, sizeof word);
+        decode_word(word, tree);
+        ++w;
+        continue;
+      }
+      if constexpr (EventTree<L>::has_block_path) {
+        const std::size_t count = std::min(capacity, words - w);
+        decode_block(bytes.data() + w * sizeof(std::uint32_t), count, tree);
+        w += count;
+      }
     }
+    const std::size_t i = words * sizeof(std::uint32_t);
     pending_size_ = bytes.size() - i;
     if (pending_size_ != 0) std::memcpy(pending_, bytes.data() + i, pending_size_);
   }
@@ -54,6 +68,48 @@ class Evt2Decoder {
   void reset() { *this = Evt2Decoder{}; }
 
  private:
+  // Decodes `count` words (at most the tree's block capacity) with the decoder's state in locals, so that nothing is
+  // reloaded from memory between words.
+  template <Layout L>
+  void decode_block(const std::byte* data, std::size_t count, EventTree<L>& tree) {
+    typename EventTree<L>::BlockWriter writer(tree);
+    bool have_time_high = have_time_high_;
+    std::uint32_t time_high_now = time_high_, last_wire_high = last_wire_high_, loops = loops_;
+    std::uint64_t cd_events = 0, time_high_words = 0, skipped_words = 0;
+    for (std::size_t n = 0; n < count; ++n) {
+      std::uint32_t word;
+      std::memcpy(&word, data + n * sizeof word, sizeof word);
+      const std::uint32_t type = word >> 28;
+      if (type <= cd_on) {
+        if (!have_time_high) [[unlikely]] {
+          ++skipped_words;
+          continue;
+        }
+        ++cd_events;
+        writer.append(time_high_now, static_cast<std::uint8_t>((word >> 22) & 0x3F),
+                      {static_cast<std::uint16_t>((word >> 11) & 0x7FF), static_cast<std::uint16_t>(word & 0x7FF),
+                       static_cast<std::uint8_t>(type)});
+      } else if (type == time_high) {
+        ++time_high_words;
+        have_time_high = true;
+        const std::uint32_t value = word & 0x0FFFFFFF;
+        if (value < last_wire_high) ++loops;
+        last_wire_high = value;
+        time_high_now = (loops << 28) | value;
+      } else {
+        ++skipped_words;
+      }
+    }
+    writer.finish();
+    have_time_high_ = have_time_high;
+    time_high_ = time_high_now;
+    last_wire_high_ = last_wire_high;
+    loops_ = loops;
+    statistics_.cd_events += cd_events;
+    statistics_.time_high_words += time_high_words;
+    statistics_.skipped_words += skipped_words;
+  }
+
   template <Layout L>
   void decode_word(std::uint32_t word, EventTree<L>& tree) {
     switch (word >> 28) {
